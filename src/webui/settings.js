@@ -7,6 +7,15 @@ function api(method, ...args) {
   catch(e) { console.error('api error', method, e); return null; }
 }
 
+/* Apply the saved theme to this window. */
+function applyTheme(value) {
+  const theme = value === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.background = theme === 'light' ? '#f8fafc' : '#0d0d0f';
+  document.documentElement.style.colorScheme = theme;
+  document.getElementById('s-theme').value = theme;
+}
+
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -394,6 +403,7 @@ function handleLanConfirm(pending) {
 async function getSettings() {
   const s = await api('get_settings');
   if (!s) return false;
+  applyTheme(s.theme);
   const hk = document.getElementById('s-hotkey');
   const gif = document.getElementById('s-gif');
   const as = document.getElementById('s-auto-start');
@@ -772,7 +782,9 @@ async function saveSettings() {
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
   const hover_zoom = document.getElementById('s-hover-zoom')?.checked !== false;
   const window_resize_enabled = document.getElementById('s-window-resize')?.checked === true;
+  const theme = document.getElementById('s-theme').value === 'light' ? 'light' : 'dark';
   await api('save_settings', {
+    theme,
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     hover_zoom,
     disable_auto_hide,
@@ -785,6 +797,7 @@ async function saveSettings() {
     lan_port, lan_secret,
     ...sync
   });
+  applyTheme(theme);
   showToast('设置已保存');
   _settingsDirty = false;
   winResizeEnabled = window_resize_enabled;
@@ -837,6 +850,7 @@ async function openEnvCheck() {
 async function resetSettings() {
   const s = await api('reset_settings');
   if (s) {
+    applyTheme(s.theme);
     const hk = document.getElementById('s-hotkey');
     const gif = document.getElementById('s-gif');
     const as = document.getElementById('s-auto-start');

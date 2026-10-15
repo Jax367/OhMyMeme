@@ -1133,3 +1133,50 @@ def test_storage_dir_validation(tmp_path):
     assert _storage_dir_validation(str(data / "x"), str(old), (data,))[0] is False
     assert _storage_dir_validation(str(tmp_path), str(old), (data,))[0] is False
     assert _storage_dir_validation(str(tmp_path / "ok"), str(old), (data,))[0] is True
+
+
+def test_theme_html_uses_saved_theme_before_scripts():
+    from src.webui import _theme_html
+
+    html = '<html lang="zh-CN"><head></head><body></body></html>'
+    light = _theme_html(html, "light")
+    assert 'data-theme="light"' in light
+    assert 'background:#f8fafc;color-scheme:light' in light
+    assert 'lang="zh-CN"' in light
+    for value in ("dark", None, '<script>alert(1)</script>'):
+        dark = _theme_html(html, value)
+        assert 'data-theme="dark"' in dark
+        assert 'background:#0d0d0f;color-scheme:dark' in dark
+        assert '<script>' not in dark
+
+
+def test_theme_settings_persist_refresh_and_reset(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import src.platform_util as platform_util
+    import src.webui as webui
+
+    monkeypatch.setattr(platform_util, "is_auto_start_enabled", lambda: False)
+    monkeypatch.setattr(platform_util, "set_auto_start", lambda enabled: None)
+    monkeypatch.setattr(webui, "_cloud_reset", lambda: None)
+    window = Mock()
+    monkeypatch.setattr(webui, "webview", SimpleNamespace(windows=[window]), raising=False)
+    cfg = Config(tmp_path / "config.json")
+    main = webui.JsApi.__new__(webui.JsApi)
+    main._cfg = cfg
+    settings = webui.SettingsApi.__new__(webui.SettingsApi)
+    settings._cfg = cfg
+    settings._webui = SimpleNamespace(_on_hotkey_change=Mock())
+    assert main.get_settings()["theme"] == "dark"
+    assert settings.get_settings()["theme"] == "dark"
+
+    settings.save_settings({"theme": "light"})
+    assert Config(tmp_path / "config.json").get("theme") == "light"
+    assert main.get_settings()["theme"] == "light"
+    assert settings.get_settings()["theme"] == "light"
+    window.evaluate_js.assert_called_with("refreshMemes();")
+
+    assert settings.reset_settings()["theme"] == "dark"
+    assert Config(tmp_path / "config.json").get("theme") == "dark"
+    assert main.get_settings()["theme"] == "dark"

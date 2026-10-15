@@ -17,6 +17,7 @@ import SetupGuide from './components/SetupGuide.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
@@ -91,6 +92,8 @@ const startupVideoReady = ref(false)
 let startupAnimTimer: ReturnType<typeof setTimeout> | null = null
 function dismissStartupAnim() {
   startupAnim.value = false
+  document.body.style.background = 'var(--bg)'
+  applyTheme(document.documentElement.dataset.theme)
   if (startupAnimTimer) { clearTimeout(startupAnimTimer); startupAnimTimer = null }
 }
 
@@ -206,6 +209,7 @@ onMounted(() => {
   window.refreshMemes = () => {
     window.pywebview?.api?.get_settings?.().then((s: any) => {
       if (s) {
+        applyTheme(s.theme)
         state.hoverZoom = s.hover_zoom !== false
         state.windowResizeEnabled = s.window_resize_enabled === true
         syncWinResizeHandles()
