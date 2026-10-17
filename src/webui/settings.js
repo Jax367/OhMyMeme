@@ -760,6 +760,19 @@ function validateSync(sync) {
   return true;
 }
 
+let settingsQueue = Promise.resolve();
+
+// 按提交顺序执行保存和重置，失败后仍允许后续操作。
+function queueSettings(action) {
+  const pending = settingsQueue.then(action);
+  settingsQueue = pending.catch(e => {
+    console.error('settings error', e);
+    showToast('设置操作失败，请重试');
+  });
+  return settingsQueue;
+}
+
+// 捕获本次设置后排队保存。
 async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
@@ -783,7 +796,7 @@ async function saveSettings() {
   const hover_zoom = document.getElementById('s-hover-zoom')?.checked !== false;
   const window_resize_enabled = document.getElementById('s-window-resize')?.checked === true;
   const theme = document.getElementById('s-theme').value === 'light' ? 'light' : 'dark';
-  await api('save_settings', {
+  const values = {
     theme,
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     hover_zoom,
@@ -796,22 +809,29 @@ async function saveSettings() {
     show_startup_animation, manifest_include_tags, manifest_include_favorites,
     lan_port, lan_secret,
     ...sync
+  };
+  return queueSettings(async () => {
+    const saved = await api('save_settings', values);
+    if (!saved || saved.ok !== true) {
+      showToast('保存设置失败，请重试');
+      return;
+    }
+    applyTheme(saved.theme);
+    showToast('设置已保存');
+    _settingsDirty = false;
+    winResizeEnabled = window_resize_enabled;
+    applyWindowResizeHandles();
+    // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
+    const cloudNow = sync.cloud_direct === true;
+    if (cloudNow && !_lastCloudDirect && sync.sync_type) {
+      const up = await showConfirm(
+        '上传缩略图',
+        '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
+      );
+      if (up) await syncPush();
+    }
+    _lastCloudDirect = cloudNow;
   });
-  applyTheme(theme);
-  showToast('设置已保存');
-  _settingsDirty = false;
-  winResizeEnabled = window_resize_enabled;
-  applyWindowResizeHandles();
-  // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
-  const cloudNow = sync.cloud_direct === true;
-  if (cloudNow && !_lastCloudDirect && sync.sync_type) {
-    const up = await showConfirm(
-      '上传缩略图',
-      '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
-    );
-    if (up) await syncPush();
-  }
-  _lastCloudDirect = cloudNow;
 }
 
 // 打开设置向导：聚焦主窗口并显示向导覆盖层；成功后关闭设置窗口保证主窗口可见
@@ -847,8 +867,18 @@ async function openEnvCheck() {
   }
 }
 
-async function resetSettings() {
+// 重置与保存共享队列，避免相互覆盖。
+function resetSettings() {
+  return queueSettings(resetSettingsNow);
+}
+
+// 回填已持久化的默认设置。
+async function resetSettingsNow() {
   const s = await api('reset_settings');
+  if (!s || s.ok === false) {
+    showToast('恢复默认设置失败，请重试');
+    return;
+  }
   if (s) {
     applyTheme(s.theme);
     const hk = document.getElementById('s-hotkey');

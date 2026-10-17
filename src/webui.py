@@ -2693,7 +2693,10 @@ class SettingsApi:
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
-            if "auto_start" in settings:
+            previous_hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
+            if "auto_start" in settings and settings["auto_start"] != self._cfg.get(
+                "auto_start", False
+            ):
                 from .platform_util import set_auto_start
 
                 set_auto_start(settings["auto_start"])
@@ -2712,13 +2715,26 @@ class SettingsApi:
                     _cloud_reset()
                     if cloud:
                         _start_cloud_refresh()
-            if "hotkey" in settings:
+            self._refresh_main_settings()
+            if "hotkey" in settings and settings["hotkey"] != previous_hotkey:
                 self._webui._on_hotkey_change(settings["hotkey"])
-            try:
-                if len(webview.windows) > 0:
-                    webview.windows[0].evaluate_js("refreshMemes();")
-            except Exception:
-                pass
+            return {"ok": True, "theme": self._cfg.get("theme", "dark")}
+        return {"ok": False, "error": "invalid_settings"}
+
+    # 将已保存的界面设置直接推送到主窗口。
+    def _refresh_main_settings(self):
+        import json
+
+        settings = {
+            "theme": self._cfg.get("theme", "dark"),
+            "hover_zoom": self._cfg.get("hover_zoom", True),
+            "window_resize_enabled": self._cfg.get("window_resize_enabled", False),
+        }
+        try:
+            if webview.windows:
+                webview.windows[0].evaluate_js(f"refreshMemes({json.dumps(settings)});")
+        except Exception:
+            logger.debug("主窗口设置刷新失败", exc_info=True)
 
     def reset_settings(self) -> dict:
         prev_cache_dir = self._cfg.get("cache_dir", "")
@@ -2732,11 +2748,7 @@ class SettingsApi:
 
         set_auto_start(False)
         _cloud_reset()
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshMemes();")
-        except Exception:
-            pass
+        self._refresh_main_settings()
         return {
             "theme": self._cfg.get("theme", "dark"),
             "hotkey": hotkey,
@@ -4642,7 +4654,15 @@ class WebUI:
                 return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():
-                return bottle.static_file("index.html", root=str(HTML_DIR))
+                try:
+                    html = _theme_html(
+                        html_path.read_text(encoding="utf-8"), self._cfg.get("theme")
+                    )
+                    bottle.response.content_type = "text/html; charset=utf-8"
+                    return html
+                except OSError as e:
+                    logger.warning(f"index.html 读取失败: {e}")
+                    return bottle.HTTPError(500, "页面读取失败")
             return "<h1>OhMyMeme</h1><p>index.html not found</p>"
 
         @app.route("/settings/")

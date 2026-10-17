@@ -1161,7 +1161,9 @@ def test_theme_settings_persist_refresh_and_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_util, "set_auto_start", lambda enabled: None)
     monkeypatch.setattr(webui, "_cloud_reset", lambda: None)
     window = Mock()
-    monkeypatch.setattr(webui, "webview", SimpleNamespace(windows=[window]), raising=False)
+    monkeypatch.setattr(
+        webui, "webview", SimpleNamespace(windows=[window]), raising=False
+    )
     cfg = Config(tmp_path / "config.json")
     main = webui.JsApi.__new__(webui.JsApi)
     main._cfg = cfg
@@ -1171,12 +1173,119 @@ def test_theme_settings_persist_refresh_and_reset(tmp_path, monkeypatch):
     assert main.get_settings()["theme"] == "dark"
     assert settings.get_settings()["theme"] == "dark"
 
-    settings.save_settings({"theme": "light"})
+    assert settings.save_settings({"theme": "light", "hotkey": "Ctrl+Alt+N"}) == {
+        "ok": True,
+        "theme": "light",
+    }
+    settings._webui._on_hotkey_change.assert_not_called()
     assert Config(tmp_path / "config.json").get("theme") == "light"
     assert main.get_settings()["theme"] == "light"
     assert settings.get_settings()["theme"] == "light"
-    window.evaluate_js.assert_called_with("refreshMemes();")
+    assert '"theme": "light"' in window.evaluate_js.call_args.args[0]
 
     assert settings.reset_settings()["theme"] == "dark"
     assert Config(tmp_path / "config.json").get("theme") == "dark"
     assert main.get_settings()["theme"] == "dark"
+
+
+# 执行真实前端函数，验证并发保存、失败恢复与刷新乱序。
+def test_theme_frontend_races():
+    script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert/strict');
+const source = fs.readFileSync('src/webui/settings.js', 'utf8');
+const elements = new Proxy({}, {get: (o, k) => o[k] ||= {value: '', checked: false}});
+const calls = [], themes = [], toasts = [];
+let resolveSave;
+const context = vm.createContext({
+  console, document: {getElementById: id => elements[id]},
+  collectSyncSettings: () => ({}), validateSync: () => true,
+  api: (method, values) => {
+    calls.push([method, values]);
+    return new Promise(resolve => {resolveSave = resolve});
+  },
+  applyTheme: value => themes.push(value), showToast: value => toasts.push(value),
+  applyWindowResizeHandles: () => {}, _lastCloudDirect: false,
+  _settingsDirty: true, winResizeEnabled: false,
+});
+vm.runInContext(source.slice(source.indexOf('let settingsQueue'), source.indexOf('// 打开设置向导')), context);
+(async () => {
+  elements['s-theme'].value = 'light';
+  const first = context.saveSettings();
+  elements['s-theme'].value = 'dark';
+  const second = context.saveSettings();
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].theme, 'light');
+  resolveSave({ok: true, theme: 'light'});
+  await first;
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].theme, 'dark');
+  resolveSave(null);
+  await second;
+  assert.deepEqual(themes, ['light']);
+  assert.ok(toasts.at(-1).includes('失败'));
+  const third = context.saveSettings();
+  await Promise.resolve();
+  resolveSave({ok: true, theme: 'dark'});
+  await third;
+  assert.deepEqual(themes, ['light', 'dark']);
+
+  const app = fs.readFileSync('src/vue-src/App.vue', 'utf8');
+  let refresh = app.slice(app.indexOf('  let settingsRefreshGen'), app.indexOf('  window.refreshTags ='));
+  refresh = refresh.replaceAll(': any', '').replace('(settings?)', '(settings)');
+  const pending = [];
+  context.window = {pywebview: {api: {get_settings: () => new Promise(r => pending.push(r))}}};
+  context.state = {};
+  context.search = context.syncWinResizeHandles = () => {};
+  vm.runInContext(refresh, context);
+  context.window.refreshMemes();
+  context.window.refreshMemes();
+  pending[1]({theme: 'light'});
+  await Promise.resolve();
+  pending[0]({theme: 'dark'});
+  await Promise.resolve();
+  assert.equal(themes.at(-1), 'light');
+  context.window.refreshMemes();
+  context.window.refreshMemes({theme: 'dark'});
+  pending[2]({theme: 'light'});
+  await Promise.resolve();
+  assert.equal(themes.at(-1), 'dark');
+})().catch(e => {console.error(e); process.exitCode = 1});
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# Vue 构建缺失时，实际回退路由仍下发已保存的主题。
+def test_theme_legacy_route(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import src.webui as webui
+
+    (tmp_path / "index.html").write_text(
+        '<html lang="zh"><head></head><body>fallback</body></html>', encoding="utf-8"
+    )
+    monkeypatch.setattr(webui, "HTML_DIR", tmp_path)
+    runner = Mock()
+    monkeypatch.setattr(webui.bottle, "run", runner)
+    ui = webui.WebUI.__new__(webui.WebUI)
+    ui._port = 17853
+    ui._cfg = SimpleNamespace(get=lambda key, default=None: "light")
+    ui._setup_bottle()
+    app = runner.call_args.args[0]
+    route = next(route for route in app.routes if route.rule == "/")
+    html = route.callback()
+    assert 'data-theme="light"' in html
+    assert "fallback" in html
+    assert webui.bottle.response.content_type == "text/html; charset=utf-8"

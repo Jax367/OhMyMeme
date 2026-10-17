@@ -206,15 +206,20 @@ onMounted(() => {
   // 兜底：视频加载失败或未触发 ended 时最多 6s 后移除遮罩，避免卡死界面
   startupAnimTimer = setTimeout(dismissStartupAnim, 6000)
   // 后端 evaluate_js 刷新入口（设置保存/同步后由 webui.py 调用）
-  window.refreshMemes = () => {
-    window.pywebview?.api?.get_settings?.().then((s: any) => {
-      if (s) {
+  let settingsRefreshGen = 0
+  window.refreshMemes = (settings?: any) => {
+    const gen = ++settingsRefreshGen
+    // 丢弃较早的设置响应，保存推送直接应用以免再等待桥接。
+    const applySettings = (s: any) => {
+      if (s && gen === settingsRefreshGen) {
         applyTheme(s.theme)
         state.hoverZoom = s.hover_zoom !== false
         state.windowResizeEnabled = s.window_resize_enabled === true
         syncWinResizeHandles()
       }
-    })
+    }
+    if (settings) applySettings(settings)
+    else window.pywebview?.api?.get_settings?.().then(applySettings).catch(console.error)
     search()
   }
   window.refreshTags = refreshTags
